@@ -21,11 +21,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Настройки
-BOT_TOKEN = "7064667705:AAGwglCj9Ys5aCvecooMgZul0Ap-1eiZoBw"
-OPENAI_API_KEY = "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"
-ADMIN_ID = 286547898  # ID администратора
-KASPI_NUMBER = "+7 777 270 46 20"
-PAYMENT_AMOUNT = "990 ₸"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ADMIN_ID = int(os.getenv("ADMIN_ID")) # ID администратора
+KASPI_NUMBER = os.getenv("KASPI_NUMBER")
+PAYMENT_AMOUNT = os.getenv("PAYMENT_AMOUNT")
 
 # Инициализация
 logging.basicConfig(level=logging.INFO)
@@ -79,8 +79,8 @@ def get_restart_keyboard():
     return keyboard
 
 #инстаграм креды
-USERNAME = "flyworxkz@gmail.com"
-PASSWORD = "Diana1996"
+USERNAME = os.getenv("USERNAME")
+PASSWORD = os.getenv("PASSWORD")
 
 # Функция для создания скриншотов Instagram профиля
 async def take_instagram_screenshots(profile_url: str) -> list:
