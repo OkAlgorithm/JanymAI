@@ -3,7 +3,6 @@ import logging
 import re
 import os
 import tempfile
-from datetime import datetime
 from io import BytesIO
 
 import aiohttp
@@ -17,6 +16,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from playwright.async_api import async_playwright
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.safari.options import Options
+from selenium.webdriver.safari.service import Service
+import time
 from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
@@ -84,363 +90,411 @@ USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
 
 # Функция для создания скриншотов Instagram профиля
+# Replace the browser launch section (STEP 1-4) with this robust version:
+
 async def take_instagram_screenshots(profile_url: str) -> list:
-    """Создает скриншоты Instagram профиля используя Playwright"""
+    """Создает скриншоты Instagram профиля используя Selenium"""
     screenshots = []
-    auth_file = "auth_state.json"
+    driver = None
 
     print("\n" + "=" * 60)
-    print("🚀 STARTING INSTAGRAM SCREENSHOT PROCESS")
+    print("🚀 STARTING INSTAGRAM SCREENSHOT PROCESS WITH SELENIUM")
     print("=" * 60)
 
-    p = None
-    browser = None
-
     try:
-        print("[STEP 1] Initializing Playwright...")
+        print("[STEP 0] Closing any existing Safari sessions...")
         try:
-            p = await async_playwright().start()
-            print("✅ Playwright initialized")
-        except Exception as e:
-            print(f"❌ CRITICAL: Failed to initialize Playwright: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-
-        print("\n[STEP 2] Launching browser with retry logic...")
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                print(f"  Attempt {attempt}/{max_retries}...")
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=['--no-sandbox', '--disable-setuid-sandbox']
-                )
-                print(f"  ✅ Browser launched on attempt {attempt}")
-                break
-            except Exception as e:
-                print(f"  ❌ Attempt {attempt} failed: {e}")
-                if attempt == max_retries:
-                    print("❌ CRITICAL: All browser launch attempts failed")
-                    import traceback
-                    traceback.print_exc()
-                    return []
-                await asyncio.sleep(2)
-
-        print("\n[STEP 3] Creating browser context...")
-        try:
-            context_options = {
-                'viewport': {'width': 1920, 'height': 1080},
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-
-            if os.path.exists(auth_file):
-                print(f"  📂 Found existing session file: {auth_file}")
-                context_options['storage_state'] = auth_file
-            else:
-                print(f"  ⚠️ No session file found at: {auth_file}")
-
-            context = await browser.new_context(**context_options)
-            print("  ✅ Context created successfully")
-        except Exception as e:
-            print(f"  ❌ CRITICAL: Failed to create context: {e}")
-            import traceback
-            traceback.print_exc()
-            if browser:
-                await browser.close()
-            return []
-
-        print("\n[STEP 4] Creating new page...")
-        try:
-            page = await context.new_page()
-            print("  ✅ Page created successfully")
-
-            # Add stealth measures
-            print("  → Adding stealth JavaScript...")
-            await page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => false,
-                });
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                });
-            """)
-            print("  ✅ Stealth measures applied")
-        except Exception as e:
-            print(f"  ❌ CRITICAL: Failed to create page: {e}")
-            import traceback
-            traceback.print_exc()
-            await context.close()
-            if browser:
-                await browser.close()
-            return []
-
-        # Login if no saved session exists
-        # Replace the login section (STEP 5) with this improved version:
-
-        print("\n[STEP 5] Checking authentication status...")
-        session_exists = os.path.exists(auth_file)
-        needs_login = True
-
-        if session_exists:
-            print(f"  📂 Session file found: {auth_file}")
-            print("  → Attempting to use existing session...")
-            try:
-                # Try to navigate to profile to verify session is valid
-                await page.goto("https://www.instagram.com/", wait_until='load', timeout=15000)
-                await asyncio.sleep(2)
-
-                # Check if we're logged in by looking for specific elements
+            # Try to quit any existing driver
+            import atexit
+            for handler in atexit._registry[:]:
                 try:
-                    # If we can find the home feed/profile icon, we're logged in
-                    await page.wait_for_selector('[aria-label="Home"]', timeout=5000)
-                    print("  ✅ Session is valid and active!")
-                    needs_login = False
-                except:
-                    print("  ⚠️ Session appears invalid or expired")
-                    needs_login = True
-            except Exception as e:
-                print(f"  ⚠️ Failed to verify session: {e}")
-                needs_login = True
-        else:
-            print(f"  ⚠️ No session file found: {auth_file}")
-            needs_login = True
-
-        if needs_login:
-            print("\n[STEP 5.1] Performing new login...")
-            try:
-                print("  → Navigating to login page...")
-                await page.goto("https://www.instagram.com/accounts/login/", wait_until='load', timeout=30000)
-                print("  ✅ Login page loaded")
-
-                await asyncio.sleep(3)
-
-                print("  → Waiting for form elements...")
-                await page.wait_for_selector('input[name="username"]', timeout=10000)
-                await page.wait_for_selector('input[name="password"]', timeout=10000)
-                await page.wait_for_selector('button[type="submit"]', timeout=10000)
-                print("  ✅ All form elements found")
-
-                print("  → Filling credentials...")
-                print(f"    Username: {USERNAME[:3]}***")
-                print(f"    Password: {'*' * len(PASSWORD)}")
-                await page.fill('input[name="username"]', USERNAME)
-                await page.fill('input[name="password"]', PASSWORD)
-                print("  ✅ Credentials filled")
-
-                print("  → Clicking submit button...")
-                await page.click('button[type="submit"]')
-                print("  ✅ Submit clicked")
-
-                print("  → Waiting for login to complete...")
-                try:
-                    await page.wait_for_load_state('networkidle', timeout=15000)
-                    await asyncio.sleep(5)
-                    print("  ✅ Login completed successfully")
-                except TimeoutError:
-                    print("  ⚠️ Login timeout, but continuing...")
-                    await asyncio.sleep(5)
-
-                # Handle optional dialogs
-                print("  → Dismissing optional dialogs...")
-                for label in ["Not Now", "Later"]:
-                    try:
-                        await page.click(f'text="{label}"', timeout=3000)
-                        print(f"    ✅ Dismissed '{label}' dialog")
-                    except:
-                        pass
-
-                # Verify we're actually logged in
-                print("  → Verifying login success...")
-                try:
-                    await page.wait_for_selector('[aria-label="Home"]', timeout=10000)
-                    print("  ✅ Login verification successful!")
-                except:
-                    print("  ⚠️ Could not verify login, but continuing...")
-
-                # Save session for future use
-                print(f"  → Saving session to {auth_file}...")
-                try:
-                    await context.storage_state(path=auth_file)
-                    print(f"  ✅ Session saved successfully ({os.path.getsize(auth_file)} bytes)")
-                except Exception as e:
-                    print(f"  ⚠️ Failed to save session: {e}")
-
-            except Exception as e:
-                print(f"  ❌ Login failed: {e}")
-                import traceback
-                traceback.print_exc()
-
-                # Try to close gracefully and return empty
-                try:
-                    await page.close()
+                    handler()
                 except:
                     pass
-                try:
-                    await context.close()
-                except:
-                    pass
-                if browser:
-                    try:
-                        await browser.close()
-                    except:
-                        pass
+        except:
+            pass
+
+        time.sleep(2)
+
+        print("[STEP 1] Setting up Safari WebDriver...")
+
+        # Safari options
+        safari_options = Options()
+        safari_options.allow_insecure_certs = True
+
+        print("✅ Safari options configured")
+
+        print("[STEP 2] Launching Safari WebDriver...")
+        print("  ⚠️ Make sure you enabled 'Allow remote automation' in Safari Settings")
+        print("  → Steps: Safari → Settings → Advanced → Enable 'Allow remote automation'")
+
+        try:
+            driver = webdriver.Safari(options=safari_options)
+            driver.set_page_load_timeout(30)
+            driver.implicitly_wait(10)
+            print("✅ Safari WebDriver launched")
+        except Exception as e:
+            if "Allow remote automation" in str(e):
+                print("❌ CRITICAL: Remote automation is not enabled in Safari!")
+                print("   Please enable it in Safari → Settings → Advanced → Allow remote automation")
                 return []
-        else:
-            print("\n[STEP 5.1] Using existing valid session")
-            print(f"  ✅ Session from: {auth_file} ({os.path.getsize(auth_file)} bytes)")
+            raise
 
-        print("\n[STEP 6] Navigating to Instagram profile...")
+        print("\n[STEP 3] Logging into Instagram...")
+        try:
+            print("  → Navigating to Instagram login...")
+            driver.get("https://www.instagram.com/accounts/login/")
+            print("  → Page loaded, waiting for content...")
+            time.sleep(5)
+
+            print("  → Waiting for login form...")
+
+            # Try multiple selectors for username field
+            username_field = None
+            password_field = None
+            login_button = None
+
+            selectors_to_try = [
+                (By.NAME, "username"),
+                (By.XPATH, "//input[@autocomplete='username']"),
+                (By.XPATH, "//input[@placeholder='Phone number, username, or email']"),
+                (By.CSS_SELECTOR, "input[type='text']"),
+            ]
+
+            print("  → Trying username field selectors...")
+            for selector_type, selector_value in selectors_to_try:
+                try:
+                    print(f"    Trying: {selector_type} = {selector_value}")
+                    username_field = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((selector_type, selector_value))
+                    )
+                    print(f"    ✅ Found username field!")
+                    break
+                except:
+                    continue
+
+            if not username_field:
+                print("  ❌ Could not find username field with any selector")
+                print(f"  → Page title: {driver.title}")
+                print(f"  → Current URL: {driver.current_url}")
+                # Take screenshot for debugging
+                screenshot = driver.get_screenshot_as_png()
+                with open("instagram_login_debug.png", "wb") as f:
+                    f.write(screenshot)
+                print("  → Saved debug screenshot to: instagram_login_debug.png")
+                return []
+
+            print("  → Finding password field...")
+            password_field = driver.find_element(By.NAME, "password")
+            if not password_field:
+                # Try alternative selectors
+                password_field = driver.find_element(By.XPATH, "//input[@type='password']")
+
+            print("  → Finding login button...")
+            try:
+                login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+            except:
+                login_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Log in')]")
+
+            print("  ✅ All form elements found")
+            print("  → Filling credentials...")
+            print(f"    Username: {USERNAME[:3]}***")
+
+            # Clear fields first
+            print("    Clearing username field...")
+            username_field.clear()
+            time.sleep(0.5)
+
+            # Type username slowly character by character
+            print("    Typing username...")
+            for char in USERNAME:
+                username_field.send_keys(char)
+                time.sleep(0.05)  # 50ms between each character
+
+            time.sleep(1)
+
+            # Click on password field to ensure focus
+            print("    Clicking on password field...")
+            password_field.click()
+            time.sleep(0.5)
+
+            # Clear password field
+            print("    Clearing password field...")
+            password_field.clear()
+            time.sleep(0.5)
+
+            # Type password slowly character by character
+            print("    Typing password...")
+            for char in PASSWORD:
+                password_field.send_keys(char)
+                time.sleep(0.05)  # 50ms between each character
+
+            time.sleep(1)
+            print("  ✅ Credentials entered")
+
+            print("  → Clicking login button...")
+            time.sleep(1)
+
+            button_clicked = False
+
+            # Try keyboard submission first (most reliable)
+            keyboard_methods = [
+                ("Press Tab to focus button, then Enter", lambda: (
+                    driver.find_element(By.NAME, "password").send_keys("\t"),
+                    time.sleep(0.3),
+                    driver.find_element(By.NAME, "password").send_keys("\n")
+                )),
+                (
+                "Direct Enter key on password field", lambda: driver.find_element(By.NAME, "password").send_keys("\n")),
+                ("Press Tab multiple times then Enter", lambda: (
+                    driver.find_element(By.NAME, "password").send_keys("\t\t\n")
+                )),
+            ]
+
+            for method_name, method_func in keyboard_methods:
+                try:
+                    print(f"    Trying keyboard method: {method_name}...")
+                    time.sleep(0.5)
+                    method_func()
+                    print(f"    ✅ Form submitted via: {method_name}")
+                    button_clicked = True
+                    break
+                except Exception as e:
+                    print(f"    ⚠️ Keyboard method failed: {str(e)[:50]}")
+                    continue
+
+            # If keyboard methods didn't work, try clicking methods
+            if not button_clicked:
+                print("    → Keyboard methods failed, trying click methods...")
+
+                click_methods = [
+                    ("Simple JavaScript form submit", lambda: driver.execute_script(
+                        "document.querySelector('form').submit()"
+                    )),
+                    ("Find all buttons and click the blue one", lambda: driver.execute_script("""
+                        const buttons = document.querySelectorAll('button');
+                        for (let btn of buttons) {
+                            if (btn.textContent.includes('Log') && btn.offsetParent !== null) {
+                                btn.click();
+                                break;
+                            }
+                        }
+                    """)),
+                    ("Click button by computed style", lambda: driver.execute_script("""
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const logBtn = buttons.find(b => b.textContent.includes('Log in'));
+                        if (logBtn) logBtn.click();
+                    """)),
+                    ("Direct element click with JavaScript", lambda: driver.execute_script(
+                        "document.querySelectorAll('button')[document.querySelectorAll('button').length - 2].click()"
+                    )),
+                ]
+
+                for method_name, click_func in click_methods:
+                    try:
+                        print(f"    Trying: {method_name}...")
+                        time.sleep(0.5)
+                        click_func()
+                        print(f"    ✅ Button clicked successfully via: {method_name}")
+                        button_clicked = True
+                        break
+                    except Exception as e:
+                        print(f"    ⚠️ Failed: {str(e)[:50]}")
+                        continue
+
+            if not button_clicked:
+                print("  ❌ Could not submit login with any method")
+                try:
+                    screenshot = driver.get_screenshot_as_png()
+                    with open("instagram_login_button_debug.png", "wb") as f:
+                        f.write(screenshot)
+                    print("  → Saved debug screenshot to: instagram_login_button_debug.png")
+
+                    # Print page source snippet
+                    page_source = driver.page_source
+                    if "Log in" in page_source:
+                        print("  → 'Log in' text found in page source")
+                    if "<button" in page_source:
+                        print("  → Buttons found in page source")
+
+                    # Try to find any form
+                    forms = driver.find_elements(By.TAG_NAME, "form")
+                    print(f"  → Found {len(forms)} forms on page")
+
+                except Exception as debug_e:
+                    print(f"  → Error getting debug info: {debug_e}")
+                return []
+
+            print("  → Waiting for login to complete...")
+            time.sleep(8)
+
+            # CRITICAL: Verify login was actually successful before proceeding
+            print("  → Verifying login success...")
+            login_successful = False
+
+            verification_attempts = [
+                ("Home button", (By.XPATH, "//*[@aria-label='Home']")),
+                ("Profile icon", (By.XPATH, "//*[@aria-label='Profile']")),
+                ("Search bar", (By.XPATH, "//input[@placeholder='Search']")),
+                ("Feed", (By.XPATH, "//article")),
+            ]
+
+            for verification_name, (locator_type, locator_value) in verification_attempts:
+                try:
+                    print(f"    Checking for: {verification_name}...")
+                    WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((locator_type, locator_value))
+                    )
+                    print(f"    ✅ Found {verification_name} - Login confirmed!")
+                    login_successful = True
+                    break
+                except:
+                    print(f"    ❌ {verification_name} not found")
+                    continue
+
+            if not login_successful:
+                print("  ❌ CRITICAL: Login verification FAILED!")
+                print("  → Instagram login did not complete successfully")
+                print("  → Saving debug screenshot...")
+                try:
+                    screenshot = driver.get_screenshot_as_png()
+                    with open("instagram_login_verification_failed.png", "wb") as f:
+                        f.write(screenshot)
+                    print("  → Saved to: instagram_login_verification_failed.png")
+                    print(f"  → Current URL: {driver.current_url}")
+                    print(f"  → Page title: {driver.title}")
+                except:
+                    pass
+                return []
+
+            print("  ✅ Login verified successfully - Proceeding with profile analysis")
+            time.sleep(3)
+
+            # Dismiss any popups
+            print("  → Dismissing optional dialogs...")
+            try:
+                dismiss_buttons = driver.find_elements(By.XPATH,
+                                                       "//*[contains(text(), 'Not Now') or contains(text(), 'Later')]")
+                for button in dismiss_buttons[:3]:  # Limit to first 3
+                    try:
+                        button.click()
+                        time.sleep(0.5)
+                    except:
+                        pass
+            except:
+                pass
+
+        except Exception as e:
+            print(f"  ❌ Login failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # Save debug screenshot
+            try:
+                screenshot = driver.get_screenshot_as_png()
+                with open("instagram_login_error_debug.png", "wb") as f:
+                    f.write(screenshot)
+                print("  → Saved debug screenshot to: instagram_login_error_debug.png")
+            except:
+                pass
+
+            return []
+
+        print("\n[STEP 4] Navigating to Instagram profile...")
         try:
             print(f"  → URL: {profile_url}")
-
-            # Set additional headers to look more like a real browser
-            await page.set_extra_http_headers({
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            })
-
-            # Try with different wait conditions
-            try:
-                print("  → First attempt with 'load' state...")
-                await page.goto(profile_url, wait_until='load', timeout=20000)
-            except Exception as e:
-                print(f"  ⚠️ Load failed ({str(e)[:50]}...), trying 'domcontentloaded'...")
-                try:
-                    await page.goto(profile_url, wait_until='domcontentloaded', timeout=20000)
-                except Exception as e2:
-                    print(f"  ⚠️ Domcontentloaded failed ({str(e2)[:50]}...), trying without wait...")
-                    await page.goto(profile_url, wait_until='commit', timeout=20000)
-
-            print("  ✅ Profile page navigated")
-
-            # Wait for page to be somewhat interactive
-            try:
-                await page.wait_for_load_state('networkidle', timeout=10000)
-                print("  ✅ Network idle reached")
-            except:
-                print("  ⚠️ Network idle timeout, continuing anyway")
-
-            await asyncio.sleep(5)
+            driver.get(profile_url)
+            print("  ✅ Profile page loaded")
+            time.sleep(3)
         except Exception as e:
             print(f"  ❌ Failed to navigate to profile: {e}")
             import traceback
             traceback.print_exc()
-            await page.close()
-            await context.close()
-            if browser:
-                await browser.close()
             return []
 
-        print("\n[STEP 7] Taking main profile screenshot...")
+        print("\n[STEP 5] Taking main profile screenshot...")
         try:
-            if page.is_closed():
-                print("  ❌ Page is closed!")
-                return screenshots
-
-            print("  → Taking screenshot...")
-            screenshot = await page.screenshot(full_page=True)
-            print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
+            screenshot = driver.get_screenshot_as_png()
+            filename = "instagram_profile.png"
+            with open(filename, "wb") as f:
+                f.write(screenshot)
+            print(f"  ✅ Screenshot saved: {filename} ({len(screenshot)} bytes)")
             screenshots.append(('profile', screenshot))
         except Exception as e:
             print(f"  ❌ Profile screenshot failed: {e}")
-            import traceback
-            traceback.print_exc()
 
-        print("\n[STEP 8] Taking highlights screenshot...")
+        print("\n[STEP 6] Taking highlights screenshot...")
         try:
-            if page.is_closed():
-                print("  ❌ Page is closed!")
-            else:
-                highlights = await page.query_selector_all('[role="button"][tabindex="0"]')
-                print(f"  ✅ Found {len(highlights)} highlight buttons")
+            # Scroll to highlights
+            driver.execute_script("window.scrollBy(0, 200);")
+            time.sleep(2)
 
-                if highlights and len(highlights) > 0:
-                    await highlights[0].click()
-                    await asyncio.sleep(2)
-                    screenshot = await page.screenshot(full_page=True)
-                    print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
-                    screenshots.append(('highlights', screenshot))
-                    await page.go_back()
-                    await asyncio.sleep(2)
-                else:
-                    print("  ℹ️ No highlights found, skipping")
+            highlight_buttons = driver.find_elements(By.XPATH, "//button[contains(@class, 'highlight')]")
+            if highlight_buttons:
+                highlight_buttons[0].click()
+                time.sleep(2)
+                screenshot = driver.get_screenshot_as_png()
+                print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
+                screenshots.append(('highlights', screenshot))
+                driver.back()
+                time.sleep(2)
+            else:
+                print("  ℹ️ No highlights found")
         except Exception as e:
             print(f"  ❌ Highlights screenshot failed: {e}")
 
-        print("\n[STEP 9] Taking followers screenshot...")
+        print("\n[STEP 7] Taking followers screenshot...")
         try:
-            if page.is_closed():
-                print("  ❌ Page is closed!")
-            else:
-                followers_link = await page.query_selector('a[href*="/followers/"]')
+            # Scroll back to top
+            driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(1)
 
-                if followers_link:
-                    await followers_link.click()
-                    await asyncio.sleep(3)
-                    screenshot = await page.screenshot(full_page=True)
-                    print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
-                    screenshots.append(('followers', screenshot))
-                    await page.go_back()
-                    await asyncio.sleep(2)
-                else:
-                    print("  ℹ️ Followers link not found, skipping")
+            followers_link = driver.find_element(By.XPATH, "//a[contains(@href, '/followers/')]")
+            followers_link.click()
+            time.sleep(3)
+            screenshot = driver.get_screenshot_as_png()
+            print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
+            screenshots.append(('followers', screenshot))
+            driver.back()
+            time.sleep(2)
         except Exception as e:
             print(f"  ❌ Followers screenshot failed: {e}")
 
-        print("\n[STEP 10] Taking posts screenshot...")
+        print("\n[STEP 8] Taking posts screenshot...")
         try:
-            if page.is_closed():
-                print("  ❌ Page is closed!")
-            else:
-                posts = await page.query_selector_all('article img')
-                print(f"  ✅ Found {len(posts)} posts")
+            # Scroll to posts section
+            driver.execute_script("window.scrollBy(0, 300);")
+            time.sleep(2)
 
-                if posts and len(posts) > 0:
-                    await posts[0].click()
-                    await asyncio.sleep(3)
-                    screenshot = await page.screenshot(full_page=True)
-                    print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
-                    screenshots.append(('posts', screenshot))
-                else:
-                    print("  ℹ️ No posts found, skipping")
+            posts = driver.find_elements(By.XPATH, "//article//img")
+            if posts:
+                posts[0].click()
+                time.sleep(2)
+                screenshot = driver.get_screenshot_as_png()
+                print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
+                screenshots.append(('posts', screenshot))
+            else:
+                print("  ℹ️ No posts found")
         except Exception as e:
             print(f"  ❌ Posts screenshot failed: {e}")
 
-        print("\n[STEP 11] Closing resources...")
+        print("\n[STEP 9] Closing driver...")
         try:
-            if page and not page.is_closed():
-                await page.close()
-                print("  ✅ Page closed")
+            driver.quit()
+            print("  ✅ WebDriver closed")
         except Exception as e:
-            print(f"  ⚠️ Error closing page: {e}")
-
-        try:
-            if context:
-                await context.close()
-                print("  ✅ Context closed")
-        except Exception as e:
-            print(f"  ⚠️ Error closing context: {e}")
+            print(f"  ⚠️ Error closing driver: {e}")
 
     except Exception as e:
         print(f"\n❌ FATAL ERROR: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        print("\n[FINAL] Closing browser and Playwright...")
-        try:
-            if browser:
-                await browser.close()
-                print("  ✅ Browser closed")
-        except Exception as e:
-            print(f"  ⚠️ Error closing browser: {e}")
-
-        try:
-            if p:
-                await p.stop()
-                print("  ✅ Playwright stopped")
-        except Exception as e:
-            print(f"  ⚠️ Error stopping Playwright: {e}")
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
 
         print(f"\n{'=' * 60}")
         print(f"📊 RESULTS: {len(screenshots)} screenshots captured")
@@ -458,6 +512,20 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")  # or "mistral", "neural-ch
 def call_ollama(messages: list, max_tokens: int = 2000) -> str:
     """Call local Ollama API instead of OpenAI"""
     try:
+        # Test connection first
+        print(f"  → Testing connection to Ollama at {OLLAMA_API_URL}...")
+        try:
+            health_response = requests.get(f"{OLLAMA_API_URL}/api/tags", timeout=5)
+            print(f"  ✅ Ollama is reachable")
+            print(f"  → Available models: {health_response.text[:100]}")
+        except Exception as e:
+            print(f"  ⚠️ Cannot reach Ollama at {OLLAMA_API_URL}")
+            print(f"     Make sure Ollama is running: ollama serve")
+            print(f"     Or check if it's on a different host/port")
+            return "Error: Ollama service not available. Make sure it's running with 'ollama serve'"
+
+        print(f"  → Sending request to model: {OLLAMA_MODEL}")
+
         payload = {
             "model": OLLAMA_MODEL,
             "messages": messages,
@@ -471,17 +539,36 @@ def call_ollama(messages: list, max_tokens: int = 2000) -> str:
             json=payload,
             timeout=120
         )
+
+        print(f"  → Response status: {response.status_code}")
+
+        if response.status_code == 404:
+            print(f"  ❌ Model '{OLLAMA_MODEL}' not found!")
+            print(f"     Available models can be seen in: ollama list")
+            print(f"     Pull a model with: ollama pull llama2")
+            return f"Error: Model '{OLLAMA_MODEL}' not found. Run 'ollama pull {OLLAMA_MODEL}'"
+
         response.raise_for_status()
 
         result = response.json()
         return result.get("message", {}).get("content", "")
 
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.ConnectionError as e:
         logging.error(f"❌ Cannot connect to Ollama at {OLLAMA_API_URL}")
-        return "Ошибка: Не удалось подключиться к локальному Ollama сервису."
+        print(f"\n⚠️ CONNECTION ERROR:")
+        print(f"   Ollama is not running or not accessible at {OLLAMA_API_URL}")
+        print(f"\n   To fix:")
+        print(f"   1. Install Ollama from https://ollama.ai")
+        print(f"   2. Run: ollama serve")
+        print(f"   3. In another terminal, pull a model: ollama pull llama2")
+        print(f"   4. Then restart this bot\n")
+        return "Ошибка: Ollama сервис не доступен. Запустите: ollama serve"
+    except requests.exceptions.Timeout:
+        logging.error(f"❌ Ollama request timeout")
+        return "Error: Ollama response timeout. The model might be processing a very long request."
     except Exception as e:
         logging.error(f"❌ Ollama API error: {e}")
-        return f"Ошибка при обработке запроса: {str(e)}"
+        return f"Error: {str(e)}"
 
 # Функция для анализа через GPT
 async def analyze_profile_with_gpt(screenshots: list, profile_url: str) -> str:
