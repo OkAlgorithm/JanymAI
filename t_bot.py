@@ -7,6 +7,7 @@ from datetime import datetime
 from io import BytesIO
 
 import aiohttp
+import requests
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -88,123 +89,364 @@ async def take_instagram_screenshots(profile_url: str) -> list:
     screenshots = []
     auth_file = "auth_state.json"
 
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+    print("\n" + "=" * 60)
+    print("🚀 STARTING INSTAGRAM SCREENSHOT PROCESS")
+    print("=" * 60)
 
-            # Try to load existing session
+    p = None
+    browser = None
+
+    try:
+        print("[STEP 1] Initializing Playwright...")
+        try:
+            p = await async_playwright().start()
+            print("✅ Playwright initialized")
+        except Exception as e:
+            print(f"❌ CRITICAL: Failed to initialize Playwright: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+        print("\n[STEP 2] Launching browser with retry logic...")
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"  Attempt {attempt}/{max_retries}...")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-setuid-sandbox']
+                )
+                print(f"  ✅ Browser launched on attempt {attempt}")
+                break
+            except Exception as e:
+                print(f"  ❌ Attempt {attempt} failed: {e}")
+                if attempt == max_retries:
+                    print("❌ CRITICAL: All browser launch attempts failed")
+                    import traceback
+                    traceback.print_exc()
+                    return []
+                await asyncio.sleep(2)
+
+        print("\n[STEP 3] Creating browser context...")
+        try:
             context_options = {
                 'viewport': {'width': 1920, 'height': 1080},
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
 
             if os.path.exists(auth_file):
-                print("📂 Loading existing session...")
+                print(f"  📂 Found existing session file: {auth_file}")
                 context_options['storage_state'] = auth_file
+            else:
+                print(f"  ⚠️ No session file found at: {auth_file}")
 
             context = await browser.new_context(**context_options)
+            print("  ✅ Context created successfully")
+        except Exception as e:
+            print(f"  ❌ CRITICAL: Failed to create context: {e}")
+            import traceback
+            traceback.print_exc()
+            if browser:
+                await browser.close()
+            return []
+
+        print("\n[STEP 4] Creating new page...")
+        try:
             page = await context.new_page()
+            print("  ✅ Page created successfully")
 
-            # Login if no saved session exists
-            if not os.path.exists(auth_file):
-                print("🔄 Opening login page...")
-                await page.goto("https://www.instagram.com/accounts/login/", wait_until="networkidle")
-                await page.wait_for_timeout(3000)
+            # Add stealth measures
+            print("  → Adding stealth JavaScript...")
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => false,
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5],
+                });
+            """)
+            print("  ✅ Stealth measures applied")
+        except Exception as e:
+            print(f"  ❌ CRITICAL: Failed to create page: {e}")
+            import traceback
+            traceback.print_exc()
+            await context.close()
+            if browser:
+                await browser.close()
+            return []
 
+        # Login if no saved session exists
+        # Replace the login section (STEP 5) with this improved version:
+
+        print("\n[STEP 5] Checking authentication status...")
+        session_exists = os.path.exists(auth_file)
+        needs_login = True
+
+        if session_exists:
+            print(f"  📂 Session file found: {auth_file}")
+            print("  → Attempting to use existing session...")
+            try:
+                # Try to navigate to profile to verify session is valid
+                await page.goto("https://www.instagram.com/", wait_until='load', timeout=15000)
+                await asyncio.sleep(2)
+
+                # Check if we're logged in by looking for specific elements
                 try:
-                    print("⏳ Waiting for login form...")
-                    await page.wait_for_selector('input[name="username"]', timeout=10000)
-                    await page.wait_for_selector('input[name="password"]', timeout=10000)
-                    await page.wait_for_selector('button[type="submit"]', timeout=10000)
-                except TimeoutError:
-                    print("❌ Timeout: Login form did not load in time.")
-                    await browser.close()
-                    return []
+                    # If we can find the home feed/profile icon, we're logged in
+                    await page.wait_for_selector('[aria-label="Home"]', timeout=5000)
+                    print("  ✅ Session is valid and active!")
+                    needs_login = False
+                except:
+                    print("  ⚠️ Session appears invalid or expired")
+                    needs_login = True
+            except Exception as e:
+                print(f"  ⚠️ Failed to verify session: {e}")
+                needs_login = True
+        else:
+            print(f"  ⚠️ No session file found: {auth_file}")
+            needs_login = True
 
-                print("✍️ Filling login form...")
+        if needs_login:
+            print("\n[STEP 5.1] Performing new login...")
+            try:
+                print("  → Navigating to login page...")
+                await page.goto("https://www.instagram.com/accounts/login/", wait_until='load', timeout=30000)
+                print("  ✅ Login page loaded")
+
+                await asyncio.sleep(3)
+
+                print("  → Waiting for form elements...")
+                await page.wait_for_selector('input[name="username"]', timeout=10000)
+                await page.wait_for_selector('input[name="password"]', timeout=10000)
+                await page.wait_for_selector('button[type="submit"]', timeout=10000)
+                print("  ✅ All form elements found")
+
+                print("  → Filling credentials...")
+                print(f"    Username: {USERNAME[:3]}***")
+                print(f"    Password: {'*' * len(PASSWORD)}")
                 await page.fill('input[name="username"]', USERNAME)
                 await page.fill('input[name="password"]', PASSWORD)
-                await page.click('button[type="submit"]')
+                print("  ✅ Credentials filled")
 
-                print("⏳ Waiting for login to complete...")
+                print("  → Clicking submit button...")
+                await page.click('button[type="submit"]')
+                print("  ✅ Submit clicked")
+
+                print("  → Waiting for login to complete...")
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)
-                    await page.wait_for_timeout(5000)
+                    await page.wait_for_load_state('networkidle', timeout=15000)
+                    await asyncio.sleep(5)
+                    print("  ✅ Login completed successfully")
                 except TimeoutError:
-                    print("⚠️ Login may not have completed — continuing anyway.")
+                    print("  ⚠️ Login timeout, but continuing...")
+                    await asyncio.sleep(5)
 
                 # Handle optional dialogs
+                print("  → Dismissing optional dialogs...")
                 for label in ["Not Now", "Later"]:
                     try:
                         await page.click(f'text="{label}"', timeout=3000)
+                        print(f"    ✅ Dismissed '{label}' dialog")
                     except:
                         pass
 
+                # Verify we're actually logged in
+                print("  → Verifying login success...")
+                try:
+                    await page.wait_for_selector('[aria-label="Home"]', timeout=10000)
+                    print("  ✅ Login verification successful!")
+                except:
+                    print("  ⚠️ Could not verify login, but continuing...")
+
                 # Save session for future use
-                await context.storage_state(path=auth_file)
-                print("✅ Login complete. Session saved.")
+                print(f"  → Saving session to {auth_file}...")
+                try:
+                    await context.storage_state(path=auth_file)
+                    print(f"  ✅ Session saved successfully ({os.path.getsize(auth_file)} bytes)")
+                except Exception as e:
+                    print(f"  ⚠️ Failed to save session: {e}")
+
+            except Exception as e:
+                print(f"  ❌ Login failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+                # Try to close gracefully and return empty
+                try:
+                    await page.close()
+                except:
+                    pass
+                try:
+                    await context.close()
+                except:
+                    pass
+                if browser:
+                    try:
+                        await browser.close()
+                    except:
+                        pass
+                return []
+        else:
+            print("\n[STEP 5.1] Using existing valid session")
+            print(f"  ✅ Session from: {auth_file} ({os.path.getsize(auth_file)} bytes)")
+
+        print("\n[STEP 6] Navigating to Instagram profile...")
+        try:
+            print(f"  → URL: {profile_url}")
+
+            # Set additional headers to look more like a real browser
+            await page.set_extra_http_headers({
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            })
+
+            # Try with different wait conditions
+            try:
+                print("  → First attempt with 'load' state...")
+                await page.goto(profile_url, wait_until='load', timeout=20000)
+            except Exception as e:
+                print(f"  ⚠️ Load failed ({str(e)[:50]}...), trying 'domcontentloaded'...")
+                try:
+                    await page.goto(profile_url, wait_until='domcontentloaded', timeout=20000)
+                except Exception as e2:
+                    print(f"  ⚠️ Domcontentloaded failed ({str(e2)[:50]}...), trying without wait...")
+                    await page.goto(profile_url, wait_until='commit', timeout=20000)
+
+            print("  ✅ Profile page navigated")
+
+            # Wait for page to be somewhat interactive
+            try:
+                await page.wait_for_load_state('networkidle', timeout=10000)
+                print("  ✅ Network idle reached")
+            except:
+                print("  ⚠️ Network idle timeout, continuing anyway")
+
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"  ❌ Failed to navigate to profile: {e}")
+            import traceback
+            traceback.print_exc()
+            await page.close()
+            await context.close()
+            if browser:
+                await browser.close()
+            return []
+
+        print("\n[STEP 7] Taking main profile screenshot...")
+        try:
+            if page.is_closed():
+                print("  ❌ Page is closed!")
+                return screenshots
+
+            print("  → Taking screenshot...")
+            screenshot = await page.screenshot(full_page=True)
+            print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
+            screenshots.append(('profile', screenshot))
+        except Exception as e:
+            print(f"  ❌ Profile screenshot failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+        print("\n[STEP 8] Taking highlights screenshot...")
+        try:
+            if page.is_closed():
+                print("  ❌ Page is closed!")
             else:
-                print("✅ Using saved session.")
-
-            # Navigate to profile
-            print(f"📍 Navigating to profile: {profile_url}")
-            await page.goto(profile_url, wait_until='networkidle')
-            await page.wait_for_timeout(5000)
-
-            safe_filename = re.sub(r'\W+', '_', profile_url)
-
-            # Main profile screenshot
-            try:
-                screenshot = await page.screenshot(full_page=True)
-                screenshots.append(('profile', screenshot))
-                logging.info(f"✅ Profile screenshot saved")
-            except Exception as e:
-                logging.error(f"❌ Profile screenshot failed: {e}")
-
-            # Highlights
-            try:
                 highlights = await page.query_selector_all('[role="button"][tabindex="0"]')
-                if highlights:
-                    await highlights[0].click()
-                    await page.wait_for_timeout(2000)
-                    screenshot = await page.screenshot(full_page=True)
-                    screenshots.append(('highlights', screenshot))
-                    logging.info(f"✅ Highlights screenshot saved")
-                    await page.go_back()
-                    await page.wait_for_timeout(2000)
-            except Exception as e:
-                logging.error(f"❌ Highlights screenshot failed: {e}")
+                print(f"  ✅ Found {len(highlights)} highlight buttons")
 
-            # Followers/Following
-            try:
+                if highlights and len(highlights) > 0:
+                    await highlights[0].click()
+                    await asyncio.sleep(2)
+                    screenshot = await page.screenshot(full_page=True)
+                    print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
+                    screenshots.append(('highlights', screenshot))
+                    await page.go_back()
+                    await asyncio.sleep(2)
+                else:
+                    print("  ℹ️ No highlights found, skipping")
+        except Exception as e:
+            print(f"  ❌ Highlights screenshot failed: {e}")
+
+        print("\n[STEP 9] Taking followers screenshot...")
+        try:
+            if page.is_closed():
+                print("  ❌ Page is closed!")
+            else:
                 followers_link = await page.query_selector('a[href*="/followers/"]')
+
                 if followers_link:
                     await followers_link.click()
-                    await page.wait_for_timeout(3000)
+                    await asyncio.sleep(3)
                     screenshot = await page.screenshot(full_page=True)
+                    print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
                     screenshots.append(('followers', screenshot))
-                    logging.info(f"✅ Followers screenshot saved")
                     await page.go_back()
-                    await page.wait_for_timeout(2000)
-            except Exception as e:
-                logging.error(f"❌ Followers screenshot failed: {e}")
+                    await asyncio.sleep(2)
+                else:
+                    print("  ℹ️ Followers link not found, skipping")
+        except Exception as e:
+            print(f"  ❌ Followers screenshot failed: {e}")
 
-            # Posts
-            try:
+        print("\n[STEP 10] Taking posts screenshot...")
+        try:
+            if page.is_closed():
+                print("  ❌ Page is closed!")
+            else:
                 posts = await page.query_selector_all('article img')
+                print(f"  ✅ Found {len(posts)} posts")
+
                 if posts and len(posts) > 0:
                     await posts[0].click()
-                    await page.wait_for_timeout(3000)
+                    await asyncio.sleep(3)
                     screenshot = await page.screenshot(full_page=True)
+                    print(f"  ✅ Screenshot captured ({len(screenshot)} bytes)")
                     screenshots.append(('posts', screenshot))
-                    logging.info(f"✅ Posts screenshot saved")
-            except Exception as e:
-                logging.error(f"❌ Posts screenshot failed: {e}")
+                else:
+                    print("  ℹ️ No posts found, skipping")
+        except Exception as e:
+            print(f"  ❌ Posts screenshot failed: {e}")
 
-            await browser.close()
+        print("\n[STEP 11] Closing resources...")
+        try:
+            if page and not page.is_closed():
+                await page.close()
+                print("  ✅ Page closed")
+        except Exception as e:
+            print(f"  ⚠️ Error closing page: {e}")
+
+        try:
+            if context:
+                await context.close()
+                print("  ✅ Context closed")
+        except Exception as e:
+            print(f"  ⚠️ Error closing context: {e}")
 
     except Exception as e:
-        logging.error(f"❌ Error creating screenshots: {e}")
+        print(f"\n❌ FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print("\n[FINAL] Closing browser and Playwright...")
+        try:
+            if browser:
+                await browser.close()
+                print("  ✅ Browser closed")
+        except Exception as e:
+            print(f"  ⚠️ Error closing browser: {e}")
+
+        try:
+            if p:
+                await p.stop()
+                print("  ✅ Playwright stopped")
+        except Exception as e:
+            print(f"  ⚠️ Error stopping Playwright: {e}")
+
+        print(f"\n{'=' * 60}")
+        print(f"📊 RESULTS: {len(screenshots)} screenshots captured")
+        for name, data in screenshots:
+            print(f"  - {name}: {len(data)} bytes")
+        print("=" * 60 + "\n")
 
     return screenshots
 
