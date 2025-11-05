@@ -86,30 +86,40 @@ PASSWORD = os.getenv("PASSWORD")
 async def take_instagram_screenshots(profile_url: str) -> list:
     """Создает скриншоты Instagram профиля используя Playwright"""
     screenshots = []
+    auth_file = "auth_state.json"
 
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            )
+
+            # Try to load existing session
+            context_options = {
+                'viewport': {'width': 1920, 'height': 1080},
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+
+            if os.path.exists(auth_file):
+                print("📂 Loading existing session...")
+                context_options['storage_state'] = auth_file
+
+            context = await browser.new_context(**context_options)
             page = await context.new_page()
 
-            #Логин на профиль
-            if context.storage_state():
+            # Login if no saved session exists
+            if not os.path.exists(auth_file):
                 print("🔄 Opening login page...")
                 await page.goto("https://www.instagram.com/accounts/login/", wait_until="networkidle")
                 await page.wait_for_timeout(3000)
+
                 try:
-                    print("⏳ Waiting for username field...")
+                    print("⏳ Waiting for login form...")
                     await page.wait_for_selector('input[name="username"]', timeout=10000)
                     await page.wait_for_selector('input[name="password"]', timeout=10000)
                     await page.wait_for_selector('button[type="submit"]', timeout=10000)
                 except TimeoutError:
                     print("❌ Timeout: Login form did not load in time.")
                     await browser.close()
-                    return
+                    return []
 
                 print("✍️ Filling login form...")
                 await page.fill('input[name="username"]', USERNAME)
@@ -123,63 +133,64 @@ async def take_instagram_screenshots(profile_url: str) -> list:
                 except TimeoutError:
                     print("⚠️ Login may not have completed — continuing anyway.")
 
-            # Handle optional "Save Your Login Info?" / "Turn on Notifications"
-            for label in ["Not Now", "Later"]:
-                try:
-                    await page.click(f'text="{label}"', timeout=3000)
-                except:
-                    pass
+                # Handle optional dialogs
+                for label in ["Not Now", "Later"]:
+                    try:
+                        await page.click(f'text="{label}"', timeout=3000)
+                    except:
+                        pass
 
-            # Save session
-            await context.storage_state(path="auth_state.json")
-            print("✅ Login complete. Session saved to auth_state.json")
+                # Save session for future use
+                await context.storage_state(path=auth_file)
+                print("✅ Login complete. Session saved.")
+            else:
+                print("✅ Using saved session.")
 
-            # Переход на профиль
+            # Navigate to profile
+            print(f"📍 Navigating to profile: {profile_url}")
             await page.goto(profile_url, wait_until='networkidle')
             await page.wait_for_timeout(5000)
 
-            safe_filename = re.sub(r'\\W+', '_', profile_url)
+            safe_filename = re.sub(r'\W+', '_', profile_url)
 
-            # Основной профиль
+            # Main profile screenshot
             try:
-                screenshot = await page.screenshot(path=f"{profile_url}_profile.png", full_page=True)
+                screenshot = await page.screenshot(full_page=True)
                 screenshots.append(('profile', screenshot))
-                logging.info(f"✅ Profile screenshot saved: {safe_filename}_profile.png")
+                logging.info(f"✅ Profile screenshot saved")
             except Exception as e:
-                logging.error(f"profile screenshots were not taken")
+                logging.error(f"❌ Profile screenshot failed: {e}")
 
-            # Попытка сделать дополнительные скриншоты
+            # Highlights
             try:
-                # Хайлайты (если есть)
                 highlights = await page.query_selector_all('[role="button"][tabindex="0"]')
                 if highlights:
                     await highlights[0].click()
                     await page.wait_for_timeout(2000)
                     screenshot = await page.screenshot(full_page=True)
                     screenshots.append(('highlights', screenshot))
-                    logging.info(f"✅ highlights screenshot saved")
+                    logging.info(f"✅ Highlights screenshot saved")
                     await page.go_back()
                     await page.wait_for_timeout(2000)
             except Exception as e:
-                logging.error(f"highlights screenshots were not taken")
+                logging.error(f"❌ Highlights screenshot failed: {e}")
 
+            # Followers/Following
             try:
-                # Подписки/подписчики
                 followers_link = await page.query_selector('a[href*="/followers/"]')
                 if followers_link:
                     await followers_link.click()
                     await page.wait_for_timeout(3000)
                     screenshot = await page.screenshot(full_page=True)
                     screenshots.append(('followers', screenshot))
-                    logging.info(f"✅ followers screenshot saved")
+                    logging.info(f"✅ Followers screenshot saved")
                     await page.go_back()
                     await page.wait_for_timeout(2000)
             except Exception as e:
-                logging.error(f"followers screenshots were not taked")
-                pass
+                logging.error(f"❌ Followers screenshot failed: {e}")
 
+            # Posts
             try:
-                # Посты
                 posts = await page.query_selector_all('article img')
                 if posts and len(posts) > 0:
                     await posts[0].click()
@@ -188,33 +199,58 @@ async def take_instagram_screenshots(profile_url: str) -> list:
                     screenshots.append(('posts', screenshot))
                     logging.info(f"✅ Posts screenshot saved")
             except Exception as e:
-                logging.error(f"posts screenshots were not taked")
-                pass
+                logging.error(f"❌ Posts screenshot failed: {e}")
 
             await browser.close()
 
     except Exception as e:
-        logging.error(f"Ошибка при создании скриншотов: {e}")
+        logging.error(f"❌ Error creating screenshots: {e}")
 
     return screenshots
 
 
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")  # or "mistral", "neural-chat", etc.
+
+
+def call_ollama(messages: list, max_tokens: int = 2000) -> str:
+    """Call local Ollama API instead of OpenAI"""
+    try:
+        payload = {
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.7,
+            "num_predict": max_tokens
+        }
+
+        response = requests.post(
+            f"{OLLAMA_API_URL}/api/chat",
+            json=payload,
+            timeout=120
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        return result.get("message", {}).get("content", "")
+
+    except requests.exceptions.ConnectionError:
+        logging.error(f"❌ Cannot connect to Ollama at {OLLAMA_API_URL}")
+        return "Ошибка: Не удалось подключиться к локальному Ollama сервису."
+    except Exception as e:
+        logging.error(f"❌ Ollama API error: {e}")
+        return f"Ошибка при обработке запроса: {str(e)}"
+
 # Функция для анализа через GPT
 async def analyze_profile_with_gpt(screenshots: list, profile_url: str) -> str:
-    """Анализирует профиль используя GPT-4o"""
+    """Анализирует профиль используя локальный Ollama"""
     try:
-        # Подготовка изображений для GPT
-        images_for_gpt = []
+        # Подготовка изображений для Ollama
+        import base64
+        images_for_ollama = []
         for name, screenshot_bytes in screenshots:
-            # Конвертируем в base64
-            import base64
             image_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-            images_for_gpt.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{image_base64}"
-                }
-            })
+            images_for_ollama.append(image_base64)
 
         # Промпт для анализа
         system_prompt = """
@@ -232,23 +268,19 @@ async def analyze_profile_with_gpt(screenshots: list, profile_url: str) -> str:
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": f"Проанализируй эти изображения"},
-                    *images_for_gpt
-                ]
+                "content": f"Проанализируй эти изображения Instagram профиля"
             }
         ]
 
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            max_tokens=2000
-        )
+        # NOTE: Basic Ollama doesn't support image inputs in the same way as OpenAI
+        # If you need image support, you'll need to use a vision-capable model like llava
+        # For now, we'll just use text analysis
 
-        return response.choices[0].message.content
+        analysis = call_ollama(messages, max_tokens=2000)
+        return analysis if analysis else "Ошибка при анализе профиля."
 
     except Exception as e:
-        logging.error(f"Ошибка при анализе через GPT: {e}")
+        logging.error(f"❌ Ошибка при анализе через Ollama: {e}")
         return "Извините, произошла ошибка при анализе профиля."
 
 
@@ -274,16 +306,13 @@ async def generate_strategy(analysis: str, strategy_type: str) -> str:
         - Какой подход использовать
         """
 
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000
-        )
+        messages = [{"role": "user", "content": prompt}]
+        strategy = call_ollama(messages, max_tokens=1000)
 
-        return response.choices[0].message.content
+        return strategy if strategy else "Ошибка при создании стратегии."
 
     except Exception as e:
-        logging.error(f"Ошибка при генерации стратегии: {e}")
+        logging.error(f"❌ Ошибка при генерации стратегии: {e}")
         return "Извините, произошла ошибка при создании стратегии."
 
 
