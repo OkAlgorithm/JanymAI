@@ -471,13 +471,13 @@ async def receipt_handler(message: types.Message, state: FSMContext):
             ]
         ])
 
-        caption_parts = (
-            "💸 Новая заявка!"
-            f"🔗 Ссылка: {instagram_url}"
-            f"👤 Пользователь: @{message.from_user.username or message.from_user.id}"
+        caption_parts = [
+            "💸 Новая заявка!",
+            f"🔗 Ссылка: {instagram_url}",
+            f"👤 Пользователь: @{message.from_user.username or message.from_user.id}",
             f"📝 Проверка: {'✅ Автоматически подтверждена' if is_valid else '⚠️ Требует ручной проверки'}"
             f"{verification_message}"
-        )
+        ]
 
         # Add verification message only if not too long
         if verification_message and len("\n".join(caption_parts) + "\n" + verification_message) <= 1000:
@@ -539,14 +539,21 @@ async def handle_receipt_approve(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("❌ Ошибка данных callback.")
         return
 
-    # FIX: Get FSM context properly
-    user_storage = MemoryStorage()
-    user_fsm_key = f"user:{user_id}:chat:{user_id}"
-    user_state = FSMContext(storage=dp.storage, key=user_fsm_key)
+    # FIX: Get the correct FSM context for the user
+    # The key format should match how aiogram stores it
+    from aiogram.fsm.storage.memory import MemoryStorage
 
+    # Get user's FSM data from storage
     try:
-        user_data = await user_state.get_data()
-        instagram_url = user_data.get("instagram_url")
+        fsm_storage = dp.storage
+        fsm_key = f"user:{user_id}:chat:{user_id}"
+        user_state_data = await fsm_storage.get_data(key=fsm_key)
+        instagram_url = user_state_data.get("instagram_url") if user_state_data else None
+
+#        if not instagram_url:
+#            await callback.answer("❌ Не найдена ссылка на профиль.")
+#            return
+
     except Exception as e:
         logging.error(f"Could not retrieve user data: {e}")
         await callback.answer("❌ Ошибка при получении данных пользователя.")
@@ -594,10 +601,25 @@ async def handle_receipt_approve(callback: types.CallbackQuery, state: FSMContex
         )
 
         # Save analysis and move to next state
-        await user_state.update_data(analysis=analysis)
-        await user_state.set_state(AnalysisStates.waiting_for_strategy_choice)
+        await fsm_storage.set_data(
+            key=fsm_key,
+            data={
+                "instagram_url": instagram_url,
+                "analysis": analysis
+            }
+        )
+
+        # FIX: Set state in FSM storage
+        await fsm_storage.set_state(key=fsm_key, state=AnalysisStates.waiting_for_strategy_choice)
+
+        print(f"✅ Analysis saved for user {user_id}")
+
     except Exception as e:
-        logging.error(f"Error sending strategy options: {e}")
+        logging.error(f"Error saving analysis: {e}")
+        try:
+            await bot.send_message(user_id, "❌ Ошибка при сохранении анализа. Попробуйте снова.")
+        except:
+            pass
 
 @dp.callback_query(F.data.startswith("receipt_is_not_valid:"))
 async def handle_receipt_reject(callback: types.CallbackQuery, state: FSMContext):
@@ -642,7 +664,13 @@ async def handle_receipt_reject(callback: types.CallbackQuery, state: FSMContext
 async def strategy_handler(callback: types.CallbackQuery, state: FSMContext):
     strategy_type = callback.data.split("_")[1]
     data = await state.get_data()
-    analysis = data['analysis']
+    analysis = data.get('analysis')
+
+    # Safety check
+#    if not analysis:
+ #       await callback.answer("❌ Анализ не найден. Попробуйте начать с начала.")
+  #      logging.warning(f"Analysis not found for user {callback.from_user.id}")
+   #     return
 
     await callback.message.edit_text("🤖 Генерирую персональную стратегию знакомства...")
 
