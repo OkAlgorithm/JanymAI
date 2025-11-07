@@ -279,7 +279,7 @@ async def simple_receipt_check(file_bytes: bytes) -> tuple[bool, str]:
     except Exception as e:
         logging.error(f"Simple receipt check error: {e}")
         return False, f"❌ File verification error: {str(e)}"
-async def analyze_profile_with_ollama(profile_url: str,callback: types.CallbackQuery | None = None, bot: Bot | None = None) -> str:
+async def analyze_profile_with_ollama(profile_url: str) -> str:
     """Анализирует Instagram профиль напрямую используя Ollama (без скриншотов)"""
     try:
         print(f"🤖 Analyzing Instagram profile: {profile_url}")
@@ -287,10 +287,6 @@ async def analyze_profile_with_ollama(profile_url: str,callback: types.CallbackQ
         # Extract username from URL
         username = profile_url.split('/')[-1].split('?')[0]
         print(f"  → Username: {username}")
-
-        # Optional: let user see progress
-        if callback and bot:
-            await bot.send_message(callback.from_user.id, "🔍 Анализирую профиль, подожди пару секунд...")
 
         system_prompt = """
         Вы — эксперт в области социального профилирования и анализа профилей Instagram.
@@ -405,7 +401,17 @@ async def link_handler(message: types.Message, state: FSMContext):
     )
     await state.set_state(AnalysisStates.waiting_for_receipt)
 
+def truncate_caption(caption: str, max_length: int = 1000) -> str:
+    """
+    Truncate caption to Telegram's limit (1024 chars)
+    Leaves room for safety margin.
+    """
+    if len(caption) <= max_length:
+        return caption
 
+    # Truncate and add ellipsis
+    truncated = caption[:max_length - 3] + "..."
+    return truncated
 @dp.message(AnalysisStates.waiting_for_receipt, F.content_type.in_(['photo', 'document']))
 async def receipt_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -465,13 +471,22 @@ async def receipt_handler(message: types.Message, state: FSMContext):
             ]
         ])
 
-        caption = (
-            f"💸 Новая заявка!\n"
-            f"🔗 Ссылка: {instagram_url}\n"
-            f"👤 Пользователь: @{message.from_user.username or message.from_user.id}\n"
-            f"📝 Проверка: {'✅ Автоматически подтверждена' if is_valid else '⚠️ Требует ручной проверки'}\n"
+        caption_parts = (
+            "💸 Новая заявка!"
+            f"🔗 Ссылка: {instagram_url}"
+            f"👤 Пользователь: @{message.from_user.username or message.from_user.id}"
+            f"📝 Проверка: {'✅ Автоматически подтверждена' if is_valid else '⚠️ Требует ручной проверки'}"
             f"{verification_message}"
         )
+
+        # Add verification message only if not too long
+        if verification_message and len("\n".join(caption_parts) + "\n" + verification_message) <= 1000:
+            caption_parts.append(f"📋 {verification_message}")
+
+        caption = "\n".join(caption_parts)
+
+        # Final truncation safety check
+        caption = truncate_caption(caption, max_length=1000)
 
         try:
             if message.photo:
@@ -480,6 +495,16 @@ async def receipt_handler(message: types.Message, state: FSMContext):
                 await bot.send_document(ADMIN_ID, message.document.file_id, caption=caption, reply_markup=keyboard)
         except Exception as e:
             logging.error(f"Error sending receipt to admin: {e}")
+            # Fallback: send without verification details if caption still too long
+            try:
+                simple_caption = f"💸 Новая заявка!\n🔗 {instagram_url}\n👤 @{message.from_user.username or message.from_user.id}"
+                if message.photo:
+                    await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=simple_caption, reply_markup=keyboard)
+                else:
+                    await bot.send_document(ADMIN_ID, message.document.file_id, caption=simple_caption, reply_markup=keyboard)
+                logging.info("Fallback caption sent successfully")
+            except Exception as e2:
+                logging.error(f"Fallback caption also failed: {e2}")
 
         # --- Tell user we're waiting for admin approval ---
         if not is_valid:
@@ -514,10 +539,18 @@ async def handle_receipt_approve(callback: types.CallbackQuery, state: FSMContex
         await callback.answer("❌ Ошибка данных callback.")
         return
 
-    # Get FSM data for that user (admin FSM is different)
-    user_state = dp.fsm.get_context(bot=bot, user_id=user_id, chat_id=user_id)
-    user_data = await user_state.get_data()
-    instagram_url = user_data.get("instagram_url")
+    # FIX: Get FSM context properly
+    user_storage = MemoryStorage()
+    user_fsm_key = f"user:{user_id}:chat:{user_id}"
+    user_state = FSMContext(storage=dp.storage, key=user_fsm_key)
+
+    try:
+        user_data = await user_state.get_data()
+        instagram_url = user_data.get("instagram_url")
+    except Exception as e:
+        logging.error(f"Could not retrieve user data: {e}")
+        await callback.answer("❌ Ошибка при получении данных пользователя.")
+        return
 
     # Edit admin message
     try:
@@ -534,20 +567,26 @@ async def handle_receipt_approve(callback: types.CallbackQuery, state: FSMContex
 
     await callback.answer("✅ Чек одобрен — пользователь уведомлён.")
 
-    # Notify user
+    # FIX: Notify user FIRST, THEN continue analysis (moved outside try-except)
     try:
         await bot.send_message(user_id, "✅ Ваш чек одобрен администратором. Начинаю анализ профиля...")
     except Exception as e:
         logging.warning(f"Failed to notify user {user_id}: {e}")
 
-    # Continue analysis workflow
-        if not instagram_url:
-            await bot.send_message(user_id, "❌ Не удалось найти ссылку на профиль. Попробуйте отправить чек заново.")
-            return
+    # FIX: This is NOW OUTSIDE the except block - will always execute
+    #if not instagram_url:
+     #   try:
+    #        await bot.send_message(user_id, "❌ Не удалось найти ссылку на профиль. Попробуйте отправить чек заново.")
+   #     except:
+  #          pass
+ #       return
 
-        analysis = await analyze_profile_with_ollama(instagram_url)
+    # FIX: Call analyze_profile_with_ollama as a synchronous function (remove async)
+    print(f"🤖 Starting analysis for user {user_id} on profile: {instagram_url}")
+    analysis = await analyze_profile_with_ollama(instagram_url)
 
-        # Send strategy options to user
+    # Send strategy options to user
+    try:
         await bot.send_message(
             user_id,
             "👇 Теперь выбери один из трёх вариантов стратегии:",
@@ -557,10 +596,8 @@ async def handle_receipt_approve(callback: types.CallbackQuery, state: FSMContex
         # Save analysis and move to next state
         await user_state.update_data(analysis=analysis)
         await user_state.set_state(AnalysisStates.waiting_for_strategy_choice)
-
     except Exception as e:
-        logging.error(f"Error during receipt approval callback: {e}")
-        await callback.answer("❌ Ошибка при обработке подтверждения.")
+        logging.error(f"Error sending strategy options: {e}")
 
 @dp.callback_query(F.data.startswith("receipt_is_not_valid:"))
 async def handle_receipt_reject(callback: types.CallbackQuery, state: FSMContext):
