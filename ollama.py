@@ -37,6 +37,26 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
+PRICING_MESSAGE = """
+💰 <b>Наша Цена:</b>
+
+🔍 <b>Анализ Instagram профиля</b>
+• Полный психологический анализ
+• Определение типа личности
+• Анализ интересов и ценностей
+• Рекомендации по подходу
+
+💵 <b>Стоимость:</b> {PAYMENT_AMOUNT} ₸
+
+📊 <b>В пакет включено:</b>
+✅ Анализ профиля
+✅ 3 варианта стратегии (Профессиональная, Личная, Креативная)
+✅ Персональные рекомендации
+
+⏱️ <b>Время обработки:</b> 2-3 минуты
+
+Начните с команды /start!
+"""
 
 # Состояния FSM
 class AnalysisStates(StatesGroup):
@@ -44,9 +64,35 @@ class AnalysisStates(StatesGroup):
     waiting_for_receipt = State()
     waiting_for_strategy_choice = State()
     waiting_for_feedback = State()
-
+    in_main_menu = State()  # New state for main menu
 
 # Клавиатуры
+def get_main_menu_keyboard():
+    """Main menu keyboard shown before /start is used"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Начать анализ", callback_data="main_start")],
+        [InlineKeyboardButton(text="💰 Узнать цену", callback_data="main_price")],
+    ])
+    return keyboard
+
+
+def get_analysis_menu_keyboard():
+    """Menu keyboard shown during analysis (/start is active)"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛑 Завершить", callback_data="main_end")],
+    ])
+    return keyboard
+
+
+def get_exit_confirmation_keyboard():
+    """Confirmation keyboard when user tries to exit"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, завершить", callback_data="confirm_end"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_end"),
+        ]
+    ])
+    return keyboard
 def get_strategy_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🧑‍💼 Профессиональное", callback_data="strategy_professional")],
@@ -376,13 +422,62 @@ async def generate_strategy(analysis: str, strategy_type: str) -> str:
 # Хэндлеры
 @dp.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
+    """Handle /start command"""
     await state.clear()
+
+    # Check if user is already in analysis
+    current_state = await state.get_state()
+    if current_state in [AnalysisStates.waiting_for_link, AnalysisStates.waiting_for_receipt]:
+        await message.answer("⚠️ Вы уже в процессе анализа. Используйте /end если хотите начать заново.")
+        return
+
     await message.answer(
-        "👋 Привет! Пришли ссылку на Instagram-профиль, который хочешь проанализировать."
+        "👋 Привет! Добро пожаловать в FlirtAI!\n\n"
+        "Я помогу тебе проанализировать Instagram профиль и получить персональную стратегию знакомства.",
+        reply_markup=get_main_menu_keyboard()
     )
-    await state.set_state(AnalysisStates.waiting_for_link)
+    await state.set_state(AnalysisStates.in_main_menu)
 
+@dp.message(F.text == "/end")
+async def end_command_handler(message: types.Message, state: FSMContext):
+    """Handle /end command - gracefully close conversation"""
+    current_state = await state.get_state()
 
+    if current_state == AnalysisStates.in_main_menu:
+        # Already in main menu, just confirm exit
+        await message.answer(
+            "👋 Спасибо за использование FlirtAI! Используйте /start чтобы начать снова."
+        )
+        await state.clear()
+        return
+
+    # If in analysis, ask for confirmation
+    await message.answer(
+        "⚠️ Вы в процессе анализа. Вы уверены, что хотите завершить?",
+        reply_markup=get_exit_confirmation_keyboard()
+    )
+@dp.message(F.text == "/price")
+async def price_command_handler(message: types.Message, state: FSMContext):
+    """Handle /price command - show pricing"""
+    current_state = await state.get_state()
+
+    if current_state in [AnalysisStates.waiting_for_link, AnalysisStates.waiting_for_receipt,
+                         AnalysisStates.waiting_for_strategy_choice, AnalysisStates.waiting_for_feedback]:
+        await message.answer(
+            "⚠️ Вы в процессе анализа. Используйте /end если хотите выйти.",
+            reply_markup=get_analysis_menu_keyboard()
+        )
+        return
+
+    # Show pricing
+    pricing_text = PRICING_MESSAGE.replace("{PAYMENT_AMOUNT}", PAYMENT_AMOUNT)
+    await message.answer(pricing_text, parse_mode=ParseMode.HTML)
+
+    if current_state == AnalysisStates.in_main_menu:
+        await message.answer(
+            "Хотите начать анализ?",
+            reply_markup=get_main_menu_keyboard()
+        )
 @dp.message(AnalysisStates.waiting_for_link)
 async def link_handler(message: types.Message, state: FSMContext):
     instagram_url = message.text
@@ -529,6 +624,67 @@ async def receipt_handler(message: types.Message, state: FSMContext):
         logging.error(f"Receipt handler error: {e}")
         await message.answer(f"❌ Ошибка при обработке файла: {str(e)}\n\nПожалуйста, попробуйте ещё раз.")
 
+# callback handlers for main menu
+@dp.callback_query(F.data == "main_start")
+async def main_start_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Start analysis from main menu"""
+    await callback.message.edit_text(
+        "👋 Привет! Пришли ссылку на Instagram-профиль, который хочешь проанализировать.",
+        reply_markup=None
+    )
+    await state.set_state(AnalysisStates.waiting_for_link)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "main_price")
+async def main_price_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Show pricing from main menu"""
+    pricing_text = PRICING_MESSAGE.replace("{PAYMENT_AMOUNT}", PAYMENT_AMOUNT)
+    await callback.message.answer(pricing_text, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "main_end")
+async def main_end_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Ask for confirmation to end analysis"""
+    await callback.message.edit_text(
+        "⚠️ Вы уверены, что хотите завершить анализ?",
+        reply_markup=get_exit_confirmation_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "confirm_end")
+async def confirm_end_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Confirm end and clear state"""
+    await callback.message.edit_text(
+        "👋 Спасибо за использование FlirtAI!\n\n"
+        "Используйте /start чтобы начать снова или /price чтобы узнать цены."
+    )
+    await state.clear()
+    await callback.answer("✅ Анализ завершен.")
+
+@dp.callback_query(F.data == "cancel_end")
+async def cancel_end_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Cancel exit and return to previous state"""
+    current_state = await state.get_state()
+
+    if current_state == AnalysisStates.waiting_for_link:
+        await callback.message.edit_text(
+            "👋 Пришли ссылку на Instagram-профиль, который хочешь проанализировать.",
+            reply_markup=None
+        )
+    elif current_state == AnalysisStates.waiting_for_strategy_choice:
+        await callback.message.edit_text(
+            "👇 Выбери один из трёх вариантов стратегии:",
+            reply_markup=get_strategy_keyboard()
+        )
+    else:
+        await callback.message.edit_text(
+            "Продолжаем анализ...",
+            reply_markup=get_analysis_menu_keyboard()
+        )
+
+    await callback.answer("✅ Продолжаем!")
 @dp.callback_query(F.data.startswith("receipt_is_valid:"))
 async def handle_receipt_approve(callback: types.CallbackQuery, state: FSMContext):
     """Admin approves receipt."""
