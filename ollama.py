@@ -159,7 +159,7 @@ def call_ollama(messages: list, max_tokens: int = 3000) -> str:
         response = requests.post(
             f"{OLLAMA_API_URL}/api/chat",
             json=payload,
-            timeout=120
+            timeout=300
         )
 
         print(f"  → Response status: {response.status_code}")
@@ -228,8 +228,6 @@ async def verify_payment_kaspi(amount: str, user_phone: str) -> tuple[bool, str]
     except Exception as e:
         logging.error(f"Kaspi API error: {e}")
         return False, f"❌ Payment verification error: {str(e)}"
-
-
 async def verify_receipt_image(file_bytes: bytes, expected_amount: str) -> tuple[bool, str]:
     """
     Verify receipt image using Ollama vision (requires vision model like llava)
@@ -275,7 +273,7 @@ async def verify_receipt_image(file_bytes: bytes, expected_amount: str) -> tuple
             json=payload,
             timeout=60
         )
-
+        print("LLAVA is working")
         if response.status_code == 200:
             result = response.json()
             receipt_info = result.get("message", {}).get("content", "")
@@ -291,7 +289,6 @@ async def verify_receipt_image(file_bytes: bytes, expected_amount: str) -> tuple
     except Exception as e:
         logging.error(f"Receipt verification error: {e}")
         return False, f"❌ Receipt verification error: {str(e)}"
-
 async def simple_receipt_check(file_bytes: bytes) -> tuple[bool, str]:
     """
     Simple receipt check - verify it's a valid image and has reasonable size
@@ -335,30 +332,62 @@ async def analyze_profile_with_ollama(profile_url: str) -> str:
         print(f"  → Username: {username}")
 
         system_prompt = """
-        Вы — эксперт в области социального профилирования и анализа профилей Instagram.
-        Проведите глубокий анализ профиля Instagram на основе URL профиля и имени пользователя.
-
-        Глубокий анализ: 
-        Используй все данные. Имя, подписки, лучший практики профайлинга и физиогномики.
-            1. Ее профиль
-            Фото
-            Хайлайты
-            Отметки
-            Цветы
-            Аксессуары 
-            Местоположение
-            Семейное положение
-            Интересы
-            Места посещений
-            Характер
-            2. Подписки
-            3. Комментарии
-            4. Круг частых контактов
-            5. Физиогномика
-            6. Жизненные ценности
-
-        Проведи глубокий анализ на Русском Языке.
-        """
+                🟢 ТВОЯ ЗАДАЧА:
+                Получив ссылку на Instagram-профиль, ты должен провести максимально глубокий и профессиональный анализ человека и сформулировать чёткую, пошаговую стратегию взаимодействия, чтобы достичь указанной мной цели (например: познакомиться, получить номер телефона, пригласить на свидание).
+                
+                📌 ОБЯЗАТЕЛЬНЫЕ ШАГИ АНАЛИЗА:
+                1️⃣ ПРОФИЛЬ:
+                
+                Фото: стиль, образы, позы, настроение.
+                Хайлайты: темы и личные акценты, что показывает о характере и интересах.
+                Отметки: кто и как отмечает человека, тип проектов или контактов.
+                Цветы: какие предпочитает, если видны на фото (для подарка или комплимента).
+                Аксессуары: стиль, бренды, детали образов.
+                Местоположение: геолокации постов и сторис, основные города и места.
+                Семейное положение: есть ли семья, дети, намёки на статус.
+                Интересы: темы контента, увлечения, профессиональная деятельность, хобби.
+                Места посещений: любимые кафе, рестораны, локации.
+                Характер: темперамент, подача себя в постах, эмоциональный фон.
+                2️⃣ АНАЛИЗ ПОДПИСОК:
+                
+                На какие аккаунты подписан человек (тематика, стиль, бренды, люди, сообщества).
+                3️⃣ АНАЛИЗ КОММЕНТАРИЕВ:
+                
+                Стиль общения, реакция на комплименты, открытость к диалогу.
+                4️⃣ КРУГ ЧАСТЫХ КОНТАКТОВ:
+                
+                Кто в близком круге, с кем взаимодействует чаще всего, тип отношений.
+                5️⃣ ФИЗИОГНОМИКА И ВИЗУАЛЬНЫЙ АНАЛИЗ:
+                
+                Основные черты лица, эмоциональная подача, уровень открытости, жестикуляция, взгляд, осанка.
+                6️⃣ ЖИЗНЕННЫЕ ЦЕННОСТИ:
+                
+                Что транслирует через посты и сторис (семья, карьера, свобода, личностный рост и т.д.).
+                🎯 ЦЕЛЬ ВЗАИМОДЕЙСТВИЯ (укажу отдельно, например):
+                Завязать первое общение в Instagram.
+                Перейти в личный мессенджер, получить номер телефона.
+                Организовать офлайн-встречу или свидание.
+                🔑 СТРАТЕГИЯ ВЗАИМОДЕЙСТВИЯ (обязательно в ответе):
+                Предоставь конкретную, пошаговую стратегию:
+                
+                Как лучше всего начать общение (первое сообщение в Директ).
+                Как развивать диалог (ключевые темы, крючки, комплименты, которые не выглядят банально).
+                Как перевести общение в личный мессенджер (номер телефона).
+                Как предложить офлайн-встречу или свидание максимально естественно и с высокой вероятностью согласия.
+                ✅ ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ К СТРАТЕГИИ:
+                Учитывай личные интересы и индивидуальные особенности профиля.
+                Избегай шаблонных и банальных фраз — только персонализированный подход.
+                Учитывай культурные особенности региона (если профиль из Казахстана — уважение традиций, дистанции, ненавязчивость).
+                Обязательно дай примеры конкретных формулировок для каждого этапа взаимодействия.
+                📎 СТРУКТУРА ТВОЕГО ОТВЕТА:
+                Полный глубокий профайлинг по пунктам выше.
+                Чёткая пошаговая стратегия достижения цели с примерами сообщений.
+                Краткая аргументация почему именно этот подход максимально эффективен с данным человеком.
+                📝 ПРИМЕР ЗАПРОСА:
+                «Вот ссылка (вставить ссылку на профиль). Цель: познакомиться, плавно перевести общение в WhatsApp и пригласить на офлайн-встречу.»
+                
+                Используй максимум информации, не экономь на деталях. Перепроверяй каждый пункт. Пиши живым, человеческим языком, без воды, с уважением к индивидуальности каждого профиля.
+         """
 
         user_message = f"""
        Проанализиру Instagram профиль:
@@ -398,20 +427,14 @@ async def generate_strategy(analysis: str, strategy_type: str) -> str:
         }
 
         prompt = f"""
-        На основе анализа личности создай {strategy_prompts[strategy_type]}.
-
         Анализ: {analysis}
 
-        Дай конкретные рекомендации:
-        - Как начать диалог
-        - О чем говорить
-        - Каких тем избегать
-        - Какой подход использовать
+                На основе анализа личности создай {strategy_prompts[strategy_type]}.
         """
 
         messages = [{"role": "user", "content": prompt}]
         strategy = call_ollama(messages, max_tokens=1000)
-
+        print("-___- Strategy Creation")
         return strategy if not strategy.startswith("Error:") else "Извините, произошла ошибка при создании стратегии."
 
     except Exception as e:
@@ -620,6 +643,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
         await state.update_data(instagram_url=instagram_url)
             # Keep user in waiting_for_receipt state to try again
 
+
     except Exception as e:
         logging.error(f"Receipt handler error: {e}")
         await message.answer(f"❌ Ошибка при обработке файла: {str(e)}\n\nПожалуйста, попробуйте ещё раз.")
@@ -706,9 +730,9 @@ async def handle_receipt_approve(callback: types.CallbackQuery, state: FSMContex
         user_state_data = await fsm_storage.get_data(key=fsm_key)
         instagram_url = user_state_data.get("instagram_url") if user_state_data else None
 
-#        if not instagram_url:
-#            await callback.answer("❌ Не найдена ссылка на профиль.")
-#            return
+        if not instagram_url:
+            await callback.answer("❌ Не найдена ссылка на профиль.")
+            return
 
     except Exception as e:
         logging.error(f"Could not retrieve user data: {e}")
@@ -832,6 +856,11 @@ async def strategy_handler(callback: types.CallbackQuery, state: FSMContext):
 
     strategy = await generate_strategy(analysis, strategy_type)
 
+    await callback.message.answer(
+        f"<b>Ваш анализ:</b>\n\n{analysis}",
+        parse_mode="HTML"
+    )
+
     strategy_names = {
         "professional": "🧑‍💼 Профессиональная стратегия",
         "personal": "❤️ Личная стратегия",
@@ -904,5 +933,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
     asyncio.run(main())
