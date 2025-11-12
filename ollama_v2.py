@@ -13,7 +13,6 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.fsm.storage.key import DefaultKey
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
 
@@ -44,10 +43,9 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Redis FSM Storage
-redis_storage = RedisStorage.from_url(
-    f"redis://{f':{REDIS_PASSWORD}@' if REDIS_PASSWORD else ''}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
-)
+# Redis FSM Storage - FIXED: Proper URL construction
+redis_url = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}" if REDIS_PASSWORD else f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
+redis_storage = RedisStorage.from_url(redis_url)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=redis_storage)
@@ -81,6 +79,104 @@ class AnalysisStates(StatesGroup):
     waiting_for_strategy_choice = State()
     waiting_for_feedback = State()
     in_main_menu = State()
+
+
+# ============ FSM HELPER FUNCTIONS ============
+
+async def get_user_state_data(user_id: int, chat_id: int = None) -> dict:
+    """
+    Safely get user's FSM data from Redis
+
+    Args:
+        user_id: Telegram user ID
+        chat_id: Optional chat ID (defaults to user_id for private chats)
+
+    Returns:
+        Dictionary with user data, empty dict if not found
+    """
+    try:
+        chat_id = chat_id or user_id
+        # Correct key format for aiogram 3.x
+        from aiogram.fsm.storage.base import StorageKey
+        key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=user_id)
+
+        data = await redis_storage.get_data(key=key)
+        return data if data else {}
+    except Exception as e:
+        logger.error(f"Error getting FSM data for user {user_id}: {e}")
+        return {}
+
+
+async def update_user_state_data(user_id: int, data: dict, chat_id: int = None) -> bool:
+    """
+    Safely update user's FSM data in Redis
+
+    Args:
+        user_id: Telegram user ID
+        data: Dictionary with data to save
+        chat_id: Optional chat ID (defaults to user_id for private chats)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        chat_id = chat_id or user_id
+        from aiogram.fsm.storage.base import StorageKey
+        key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=user_id)
+
+        await redis_storage.set_data(key=key, data=data)
+        return True
+    except Exception as e:
+        logger.error(f"Error updating FSM data for user {user_id}: {e}")
+        return False
+
+
+async def set_user_state(user_id: int, state: State, chat_id: int = None) -> bool:
+    """
+    Safely set user's FSM state in Redis
+
+    Args:
+        user_id: Telegram user ID
+        state: FSM State to set
+        chat_id: Optional chat ID (defaults to user_id for private chats)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        chat_id = chat_id or user_id
+        from aiogram.fsm.storage.base import StorageKey
+        key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=user_id)
+
+        await redis_storage.set_state(key=key, state=state)
+        return True
+    except Exception as e:
+        logger.error(f"Error setting FSM state for user {user_id}: {e}")
+        return False
+
+
+async def clear_user_state(user_id: int, chat_id: int = None) -> bool:
+    """
+    Safely clear user's FSM state and data in Redis
+
+    Args:
+        user_id: Telegram user ID
+        chat_id: Optional chat ID (defaults to user_id for private chats)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        chat_id = chat_id or user_id
+        from aiogram.fsm.storage.base import StorageKey
+        key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=user_id)
+
+        await redis_storage.set_state(key=key, state=None)
+        await redis_storage.set_data(key=key, data={})
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing FSM state for user {user_id}: {e}")
+        return False
 
 
 # Клавиатуры
@@ -124,8 +220,8 @@ def get_strategy_keyboard():
 def get_admin_receipt_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Inline keyboard sent to admin to approve / request resend for a specific user's receipt."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Одобряю", callback_data=f"receipt_is_valid:{user_id}")],
-        [InlineKeyboardButton(text="Повторно отправить чек", callback_data=f"receipt_is_not_valid:{user_id}")]
+        [InlineKeyboardButton(text="✅ Одобряю", callback_data=f"receipt_is_valid:{user_id}")],
+        [InlineKeyboardButton(text="🔁 Повторно отправить чек", callback_data=f"receipt_is_not_valid:{user_id}")]
     ])
 
 
@@ -195,7 +291,7 @@ def call_ollama(
             "stream": False,
             "temperature": temperature,
             "num_predict": max_tokens,
-            **extra_payload  # Include any additional fields
+            **extra_payload
         }
 
         response = requests.post(
@@ -363,29 +459,29 @@ async def analyze_profile_with_ollama(profile_url: str) -> str:
         logger.info(f"→ Username: {username}")
 
         system_prompt = """
-🟢 ТВОЯ ЗАДАЧА:
-Получив ссылку на Instagram-профиль, ты должен провести максимально глубокий и профессиональный анализ человека и сформулировать чёткую стратегию взаимодействия.
-
-📌 ОБЯЗАТЕЛЬНЫЕ ШАГИ АНАЛИЗА:
-1️⃣ ПРОФИЛЬ: Фото (стиль, образы, позы), хайлайты, интересы, места, характер
-2️⃣ ПОДПИСКИ: На какие аккаунты подписан (тематика, бренды)
-3️⃣ КОММЕНТАРИИ: Стиль общения, открытость к диалогу
-4️⃣ КРУГ КОНТАКТОВ: Кто в близком круге
-5️⃣ ФИЗИОГНОМИКА: Эмоциональная подача, открытость
-6️⃣ ЦЕННОСТИ: Что транслирует (семья, карьера, свобода)
-
-🎯 СТРАТЕГИЯ ВЗАИМОДЕЙСТВИЯ:
-- Как начать общение (первое сообщение)
-- Как развивать диалог (ключевые темы, крючки)
-- Как перейти в личный мессенджер
-- Как предложить встречу
-
-✅ ТРЕБОВАНИЯ:
-- Учитывай личные интересы
-- Избегай шаблонных фраз
-- Дай конкретные примеры формулировок
-- Живой, человеческий язык
-"""
+            🟢 ТВОЯ ЗАДАЧА:
+            Получив ссылку на Instagram-профиль, ты должен провести максимально глубокий и профессиональный анализ человека и сформулировать чёткую стратегию взаимодействия.
+            
+            📌 ОБЯЗАТЕЛЬНЫЕ ШАГИ АНАЛИЗА:
+            1️⃣ ПРОФИЛЬ: Фото (стиль, образы, позы), хайлайты, интересы, места, характер
+            2️⃣ ПОДПИСКИ: На какие аккаунты подписан (тематика, бренды)
+            3️⃣ КОММЕНТАРИИ: Стиль общения, открытость к диалогу
+            4️⃣ КРУГ КОНТАКТОВ: Кто в близком круге
+            5️⃣ ФИЗИОГНОМИКА: Эмоциональная подача, открытость
+            6️⃣ ЦЕННОСТИ: Что транслирует (семья, карьера, свобода)
+            
+            🎯 СТРАТЕГИЯ ВЗАИМОДЕЙСТВИЯ:
+            - Как начать общение (первое сообщение)
+            - Как развивать диалог (ключевые темы, крючки)
+            - Как перейти в личный мессенджер
+            - Как предложить встречу
+            
+            ✅ ТРЕБОВАНИЯ:
+            - Учитывай личные интересы
+            - Избегай шаблонных фраз
+            - Дай конкретные примеры формулировок
+            - Живой, человеческий язык
+            """
 
         user_message = f"Проанализируй Instagram профиль: {profile_url}"
 
@@ -548,13 +644,7 @@ async def receipt_handler(message: types.Message, state: FSMContext):
                 is_valid, verification_message = await simple_receipt_check(file_data)
 
         # Send to admin
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Одобряю", callback_data=f"receipt_is_valid:{message.from_user.id}"),
-                InlineKeyboardButton(text="🔁 Запросить повтор",
-                                     callback_data=f"receipt_is_not_valid:{message.from_user.id}"),
-            ]
-        ])
+        keyboard = get_admin_receipt_keyboard(message.from_user.id)
 
         caption_parts = [
             "💸 Новая заявка!",
@@ -668,7 +758,9 @@ async def cancel_end_callback(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("receipt_is_valid:"))
 async def handle_receipt_approve(callback: types.CallbackQuery):
-    """Admin approves receipt"""
+    """
+    Admin approves receipt - REFACTORED with proper FSM handling
+    """
     try:
         _, user_id_str = callback.data.split(":", 1)
         user_id = int(user_id_str)
@@ -681,7 +773,7 @@ async def handle_receipt_approve(callback: types.CallbackQuery):
     try:
         if callback.message.caption:
             await callback.message.edit_caption(
-                f"{callback.message.caption}\n\n✅ Чек одобрен администратором."
+                caption=f"{callback.message.caption}\n\n✅ Чек одобрен администратором."
             )
         else:
             await callback.message.edit_text(
@@ -692,18 +784,18 @@ async def handle_receipt_approve(callback: types.CallbackQuery):
 
     await callback.answer("✅ Чек одобрен — пользователь уведомлён.")
 
-    # Get user state and data from Redis
+    # Get user state and data using helper function
     try:
         # Notify user
         await bot.send_message(user_id, "✅ Ваш чек одобрен! Начинаю анализ профиля...")
 
-        # Get FSM context for user (correct key format for aiogram 3.x)
-        fsm_key = f"{user_id}:{user_id}"
-        data = await redis_storage.get_data(key=fsm_key)
-        instagram_url = data.get('instagram_url') if data else None
+        # Get user data using helper function
+        user_data = await get_user_state_data(user_id)
+        instagram_url = user_data.get('instagram_url')
 
         if not instagram_url:
             await bot.send_message(user_id, "❌ Ссылка на профиль не найдена. Начните с /start")
+            logger.warning(f"No instagram_url found for user {user_id}")
             return
 
         # Analyze profile
@@ -724,23 +816,36 @@ async def handle_receipt_approve(callback: types.CallbackQuery):
             reply_markup=get_strategy_keyboard()
         )
 
-        # Update FSM state and data in Redis
-        await redis_storage.set_data(key=fsm_key, data={"instagram_url": instagram_url, "analysis": analysis})
-        await redis_storage.set_state(key=fsm_key, state=AnalysisStates.waiting_for_strategy_choice)
+        # Update FSM state and data using helper functions
+        updated_data = {
+            'instagram_url': instagram_url,
+            'analysis': analysis
+        }
 
-        logger.info(f"✅ Analysis data saved for user {user_id}")
+        success_data = await update_user_state_data(user_id, updated_data)
+        success_state = await set_user_state(user_id, AnalysisStates.waiting_for_strategy_choice)
+
+        if success_data and success_state:
+            logger.info(f"✅ Analysis data and state saved for user {user_id}")
+        else:
+            logger.warning(f"⚠️ Failed to save FSM data for user {user_id}")
 
     except Exception as e:
-        logger.error(f"Error in receipt approval: {e}")
+        logger.error(f"Error in receipt approval: {e}", exc_info=True)
         try:
-            await bot.send_message(user_id, f"❌ Ошибка: {str(e)}")
-        except:
-            pass
+            await bot.send_message(
+                user_id,
+                f"❌ Произошла ошибка при обработке вашего запроса. Попробуйте начать заново с /start"
+            )
+        except Exception as send_error:
+            logger.error(f"Failed to send error message to user {user_id}: {send_error}")
 
 
 @dp.callback_query(F.data.startswith("receipt_is_not_valid:"))
 async def handle_receipt_reject(callback: types.CallbackQuery):
-    """Admin rejects receipt"""
+    """
+    Admin rejects receipt - REFACTORED with proper FSM handling
+    """
     try:
         _, user_id_str = callback.data.split(":", 1)
         user_id = int(user_id_str)
@@ -753,7 +858,7 @@ async def handle_receipt_reject(callback: types.CallbackQuery):
     try:
         if callback.message.caption:
             await callback.message.edit_caption(
-                f"{callback.message.caption}\n\n🔁 Запрошена повторная отправка."
+                caption=f"{callback.message.caption}\n\n🔁 Запрошена повторная отправка."
             )
         else:
             await callback.message.edit_text(
@@ -764,7 +869,7 @@ async def handle_receipt_reject(callback: types.CallbackQuery):
 
     await callback.answer("🔁 Запрос отправлен пользователю.")
 
-    # Notify user and return to receipt state
+    # Notify user and return to receipt state using helper function
     try:
         await bot.send_message(
             user_id,
@@ -772,10 +877,16 @@ async def handle_receipt_reject(callback: types.CallbackQuery):
             "Пожалуйста, пришлите корректный чек."
         )
 
-        fsm_key = f"{user_id}:{user_id}"
-        await redis_storage.set_state(key=fsm_key, state=AnalysisStates.waiting_for_receipt)
+        # Set state back to waiting for receipt using helper function
+        success = await set_user_state(user_id, AnalysisStates.waiting_for_receipt)
+
+        if success:
+            logger.info(f"✅ User {user_id} state reset to waiting_for_receipt")
+        else:
+            logger.warning(f"⚠️ Failed to reset state for user {user_id}")
+
     except Exception as e:
-        logger.warning(f"Failed to notify user {user_id}: {e}")
+        logger.error(f"Failed to notify user {user_id}: {e}", exc_info=True)
 
 
 @dp.callback_query(F.data.startswith("strategy_"))
@@ -830,10 +941,12 @@ async def rating_handler(callback: types.CallbackQuery, state: FSMContext):
 
     # Send rating to admin
     try:
-        await bot.send_message(ADMIN_ID,
-                               f"⭐ Новая оценка от @{callback.from_user.username or callback.from_user.id}: {rating}/10")
-    except:
-        pass
+        await bot.send_message(
+            ADMIN_ID,
+            f"⭐ Новая оценка от @{callback.from_user.username or callback.from_user.id}: {rating}/10"
+        )
+    except Exception as e:
+        logger.error(f"Failed to send rating to admin: {e}")
 
     await callback.answer()
 
@@ -860,8 +973,8 @@ async def feedback_handler(message: types.Message, state: FSMContext):
             ADMIN_ID,
             f"💬 Новый отзыв от @{message.from_user.username or message.from_user.id}:\n{feedback}"
         )
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"Failed to send feedback to admin: {e}")
 
     await message.answer(
         "✅ Спасибо за отзыв!",
@@ -869,17 +982,99 @@ async def feedback_handler(message: types.Message, state: FSMContext):
     )
 
 
+# ============ ERROR HANDLER ============
+
+@dp.error()
+async def error_handler(event, exception):
+    """
+    Global error handler for the bot
+    """
+    logger.error(f"❌ Error occurred: {exception}", exc_info=True)
+
+    # Try to notify user if possible
+    if hasattr(event, 'update') and event.update:
+        try:
+            if event.update.message:
+                await event.update.message.answer(
+                    "❌ Произошла ошибка. Попробуйте начать заново с /start"
+                )
+            elif event.update.callback_query:
+                await event.update.callback_query.message.answer(
+                    "❌ Произошла ошибка. Попробуйте начать заново с /start"
+                )
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+
+    return True  # Mark as handled
+
+
 # ============ BOT STARTUP ============
+
+async def on_startup():
+    """Actions on bot startup"""
+    logger.info("🚀 Starting FlirtAI bot...")
+
+    # Test Redis connection
+    try:
+        from aiogram.fsm.storage.base import StorageKey
+        test_key = StorageKey(bot_id=bot.id, chat_id=0, user_id=0)
+        await redis_storage.set_data(key=test_key, data={"test": "connection"})
+        await redis_storage.get_data(key=test_key)
+        logger.info("✅ Redis connection successful")
+    except Exception as e:
+        logger.error(f"❌ Redis connection failed: {e}")
+        raise
+
+    # Test Ollama connection
+    try:
+        response = requests.get(f"{OLLAMA_API_URL}/api/tags", timeout=5)
+        if response.status_code == 200:
+            logger.info("✅ Ollama connection successful")
+        else:
+            logger.warning(f"⚠️ Ollama returned status {response.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ Ollama connection failed: {e}")
+
+    logger.info(f"✅ Bot started successfully")
+    logger.info(f"📊 Admin ID: {ADMIN_ID}")
+    logger.info(f"💰 Payment amount: {PAYMENT_AMOUNT} ₸")
+    logger.info(f"🔑 Kaspi API enabled: {USE_KASPI_API}")
+
+
+async def on_shutdown():
+    """Actions on bot shutdown"""
+    logger.info("🛑 Shutting down bot...")
+
+    # Close Redis connection
+    try:
+        await redis_storage.close()
+        logger.info("✅ Redis connection closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing Redis: {e}")
+
+    # Close bot session
+    try:
+        await bot.session.close()
+        logger.info("✅ Bot session closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing bot session: {e}")
+
 
 async def main():
     """Start the bot"""
-    logger.info("🚀 Starting FlirtAI bot...")
     try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        await on_startup()
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+            drop_pending_updates=True  # Skip pending updates on restart
+        )
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
     except Exception as e:
-        logger.error(f"Bot startup error: {e}")
+        logger.error(f"❌ Bot startup error: {e}", exc_info=True)
     finally:
-        await bot.session.close()
+        await on_shutdown()
 
 
 if __name__ == "__main__":
